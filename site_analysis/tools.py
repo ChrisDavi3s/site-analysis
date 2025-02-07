@@ -93,6 +93,19 @@ def get_vertex_indices(
         vertex_indices.append( atom_indices )
     return vertex_indices
 
+def minimal_image(centre: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """
+    Given a test point x (fractional coordinates), return the image of x
+    that is closest to centre point.
+
+    This works by computing the difference between x and the centre,
+    then subtracting the nearest integer from each component. This
+    forces the difference into the range [-0.5, 0.5].
+    """
+    diff = x - centre
+    diff = diff - np.round(diff)
+    return centre + diff
+
 def x_pbc(x: np.ndarray):
     """Return an array of fractional coordinates mapped into all positive neighbouring 
     periodic cells.
@@ -172,6 +185,50 @@ def generate_site_atom_distance_matrix(sites: List[Site], atoms: List[Atom]) -> 
     distance_matrix = np.sqrt(np.einsum('ijk,ijk->ij', delta, delta))
 
     return distance_matrix
+
+def generate_polyhedral_site_atom_distance_matrix(
+    sites: List['PolyhedralSite'],
+    atoms: List['Atom'],
+    site_centers: Optional[np.ndarray] = None,
+    site_circumradii: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """
+    Generate a distance matrix between sites and atoms using circumradius-based filtering,
+    optimized by applying the mask before computing the norm.
+
+    Args:
+        sites: List of PolyhedralSite objects.
+        atoms: List of Atom objects.
+        site_centers: Precomputed site centers (fractional coordinates).
+        site_circumradii: Precomputed site circumradii.
+
+    Returns:
+        np.ndarray: Distance matrix where [i,j] is the distance between site i and atom j.
+                   Atoms outside the site's circumradius are set to infinity.
+    """
+
+    if site_centers is None:
+        site_centers = np.array([site.centre() for site in sites])
+    if site_circumradii is None:
+        site_circumradii = np.array([site.circumradius for site in sites])
+
+    atom_coords = np.array([atom.frac_coords for atom in atoms])
+
+    # Compute minimal image vectors adjusted for PBC
+    delta = atom_coords - site_centers[:, np.newaxis, :]
+    delta -= np.round(delta)
+
+    # Calculate squared distances to avoid sqrt until necessary
+    squared_distances = np.sum(delta ** 2, axis=2)
+
+    # Create mask based on squared circumradii
+    valid_mask = squared_distances <= (site_circumradii[:, np.newaxis] ** 2)
+
+    # Initialize distance matrix with infinity, then fill valid distances
+    distances = np.full_like(squared_distances, np.inf)
+    distances[valid_mask] = np.sqrt(squared_distances[valid_mask])
+
+    return distances
 
 def generate_structure_distance_matrix(structure: Structure,
                                     return_cartesian: bool = True) -> np.ndarray:

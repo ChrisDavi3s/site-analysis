@@ -1,7 +1,7 @@
 from .site_collection import SiteCollection
 from typing import List, Any, Optional, Dict
 from .polyhedral_site import PolyhedralSite
-from .tools import generate_site_atom_distance_matrix
+from .tools import generate_polyhedral_site_atom_distance_matrix
 from .atom import Atom
 from .site import Site
 from pymatgen.core import Structure # type: ignore
@@ -13,7 +13,6 @@ class PolyhedralSiteCollection(SiteCollection):
 
     Attributes:
         sites (list): List of ``Site``-like objects.
-
     """
 
     def __init__(self,
@@ -34,6 +33,8 @@ class PolyhedralSiteCollection(SiteCollection):
         self.sites: List[PolyhedralSite] = self.sites
         self._neighbouring_sites: Optional[List[PolyhedralSite]]  = None
         self.max_cn: int = max([s.cn for s in self.sites]) 
+        self.site_centers: Optional[np.ndarray] = None
+        self.site_circumradii: Optional[np.ndarray] = None
 
     def analyse_structure(self,
             atoms: List[Atom],
@@ -42,7 +43,10 @@ class PolyhedralSiteCollection(SiteCollection):
             a.assign_coords(structure)
         for s in self.sites:
             s.assign_vertex_coords(structure)
+        self.site_centers = np.array([site.centre() for site in self.sites])
+        self.site_circumradii = np.array([site.circumradius for site in self.sites])
         self.assign_site_occupations(atoms, structure)
+
 
     def assign_site_occupations(self, atoms: List[Atom], structure: Structure) -> None:
         """Assign atoms to sites by checking sites in order of proximity.
@@ -61,57 +65,54 @@ class PolyhedralSiteCollection(SiteCollection):
             4. If the atom is in a site, update the site occupation
         """
         self.reset_site_occupations()
+        atoms = atoms.copy()
+        processed_atoms = []
 
-        atoms = atoms.copy()  # Copy the list to avoid some wonky behaviour
-
-        # First handle atoms that are already assigned to sites
-        for atom in atoms:
-            if atom.in_site:
-                previous_site = self.sites[atom.in_site]
-                if previous_site.contains_atom(atom):
-                    self.update_occupation(previous_site, atom)
+        # Process atoms already in sites
+        for atom in list(atoms):
+            if atom.in_site is not None:
+                site = self.sites[atom.in_site]
+                if site.contains_atom(atom):
+                    self.update_occupation(site, atom)
                     atoms.remove(atom)
+                    processed_atoms.append(atom)
 
-        if len(atoms) == 0:
+        if not atoms:
             return
 
-        # Distance matrix for all sites and atoms by minimum pbc distance
-        distance_matrix = generate_site_atom_distance_matrix(self.sites, atoms)
+        # Generate optimised distance matrix with circumradius filtering
+        distance_matrix = generate_polyhedral_site_atom_distance_matrix(self.sites,
+                                                                        atoms,
+                                                                        self.site_centers,
+                                                                        self.site_circumradii)
 
-        # First get the k nearest neighbors using partition
-        k = self.max_cn
-        partial_sorted_indices = np.argpartition(distance_matrix, k, axis=0)
+        # Pre-compute valid sites and sorted indices for all atoms
+        valid_sites_masks = np.isfinite(distance_matrix)
+        candidate_indices_list = [np.where(valid_sites_masks[:, i])[0] for i in range(len(atoms))]
 
-        not_assigned_atoms = []
-        for i, atom in enumerate(atoms):
-            assigned = False
+        sorted_indices_list = [
+            candidates[np.argsort(distance_matrix[candidates, atom_idx])]
+            for atom_idx, candidates in enumerate(candidate_indices_list)
+            if candidates.size > 0
+        ]
 
-            # First check the k nearest sites (these are partially sorted)
-            for site_idx in partial_sorted_indices[:k, i]:
+        # Process remaining atoms using pre-computed indices
+        for atom_idx, atom in enumerate(atoms):
+            if not candidate_indices_list[atom_idx].size:
+                print(f"Unassigned atom {atom.index} at {atom.frac_coords}")
+                continue
+
+            for site_idx in sorted_indices_list[atom_idx]:
                 site = self.sites[site_idx]
                 if site.contains_atom(atom):
                     self.update_occupation(site, atom)
-                    assigned = True
+                    processed_atoms.append(atom)
                     break
+            else:
+                print(f"Unassigned atom {atom.index} at {atom.frac_coords}")    
 
-            # If not assigned, check the remaining sites
-            if not assigned:
-                remaining_indices = partial_sorted_indices[k:, i]
-                for site_idx in remaining_indices:
-                    site = self.sites[site_idx]
-                    if site.contains_atom(atom):
-                        self.update_occupation(site, atom)
-                        assigned = True
-                        break
-
-            if not assigned:
-                not_assigned_atoms.append(atom)
-
-        if not_assigned_atoms:
-            print("Not assigned atoms: ", [atom.index for atom in not_assigned_atoms])
-            print(f'Atom frac coords: {not_assigned_atoms[0].frac_coords} for atom {not_assigned_atoms[0].index}')
-
-    def neighbouring_sites(self, index: int) -> List[PolyhedralSite]:
+    @property
+    def neighbouring_sites(self) -> Dict[int, List[PolyhedralSite]]:
         """Get list of neighboring sites for a given site index.
         
         Args:
@@ -120,7 +121,10 @@ class PolyhedralSiteCollection(SiteCollection):
         Returns:
             List[PolyhedralSite]: List of neighboring polyhedral sites
         """
-        return self._neighbouring_sites[index]
+        if self._neighbouring_sites is None:
+            self._neighbouring_sites = self._construct_neighbouring_sites(self.sites)
+        return self._neighbouring_sites
+
 
     def sites_contain_points(self,
             points: np.ndarray,

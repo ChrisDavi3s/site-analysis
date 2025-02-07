@@ -317,6 +317,16 @@ class PolyhedralSiteTestCase(unittest.TestCase):
                                        [0.6, 0.4, 0.6]])
         expected_centre = np.array([0.5, 0.5, 0.5])
         np.testing.assert_array_equal(site.centre(),expected_centre)
+
+    def test_circumradius(self):
+        site = self.site
+        site.vertex_coords = np.array([[0.4, 0.4, 0.4],
+                                       [0.4, 0.6, 0.6],
+                                       [0.6, 0.6, 0.4],
+                                       [0.6, 0.4, 0.6]])
+        # sqrt( 0.1^2 + 0.1^2 + 0.1^2 )
+        expected_circumradius = 0.1732050808
+        self.assertAlmostEqual(site.circumradius, expected_circumradius)
   
 def example_structure(species=None):
     if not species:
