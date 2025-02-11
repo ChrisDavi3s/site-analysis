@@ -51,6 +51,9 @@ class PolyhedralSite(Site):
         self._hull: ConvexHull = None
         self._surface_normals: Optional[np.ndarray] = None
         self._c_signs = None
+        self._centre = None
+        self._circumradius = None
+        self._bounding_box = None
 
 
     def __repr__(self) -> str:
@@ -83,8 +86,9 @@ class PolyhedralSite(Site):
         self._faces = None
         self._surface_normals = None
         self._c_signs = None
-        if hasattr(self, '_bounding_box'):
-            del self._bounding_box
+        self._centre = None
+        self._circumradius = None
+        self._bounding_box = None
 
     def assign_vertex_coords(self,
             structure: Structure) -> None:
@@ -246,11 +250,6 @@ class PolyhedralSite(Site):
 
         Returns:
             bool
-
-        Note:
-            From 7.51x for N=1 to 500x faster for N=1000 compared to the previous implemntation.
-  
-            This is also a possible target for optimisation with f2py etc.
         """        
         if x_list.ndim == 1:
             x_list = x_list.reshape((1, 3))  # Ensure it is (N,3) for a single point
@@ -279,6 +278,9 @@ class PolyhedralSite(Site):
             algo (:obj:`str`, optional): Select the algorithm to us. Options are
                 'simplex' and 'sn'. See the documentation for the contains_point()
                 method for more details. Default is 'simplex'.
+        
+        Notes:
+            sn is faster for large numbers of faces.
 
         Returns:
             bool
@@ -313,8 +315,27 @@ class PolyhedralSite(Site):
             (np.array): (3,) numpy array.
  
         """
+        if self._centre is not None:
+            return self._centre
         assert(isinstance(self.vertex_coords, np.ndarray))
         return np.mean(self.vertex_coords, axis=0)
+
+    @property
+    def circumradius(self) -> float:
+        """
+        Returns the circumradius of the polyhedron. This is the radius of the
+        circumsphere that encloses the polyhedron.
+
+        Args:
+            None
+
+        Returns:
+            float
+        """
+        if self._circumradius is None:
+            distances = np.linalg.norm(self.vertex_coords - self.centre(), axis=1)
+            self._circumradius = np.max(distances) 
+        return self._circumradius
 
     @classmethod
     def sites_from_vertex_indices(cls, vertex_indices, label=None):
@@ -364,7 +385,6 @@ class PolyhedralSite(Site):
             self._bounding_box = (mins, maxs)
         return self._bounding_box
 
- 
     @property
     def delaunay(self) -> Delaunay:
         """Delaunay tessellation of the vertex coordinates for this site.
